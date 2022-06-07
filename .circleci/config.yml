@@ -78,7 +78,7 @@ jobs:
             TMPOUTDIR=$(mktemp -d)
             export GOOS=linux
             export GOARCH=amd64
-            for cmd in github.com/influxdata/influxdb/cmd/{influxd,influx,influx_inspect}
+            for cmd in github.com/influxdata/influxdb/cmd/{influxd,influx,influx_inspect,influx_tools}
             do
               go build \
                 -o "${TMPOUTDIR}/$(basename $cmd)" \
@@ -98,7 +98,7 @@ jobs:
       - persist_to_workspace:
           root: .
           paths:
-              - bins 
+              - bins
       - save_cache:
           key: influxdb-cache-v1-{{ checksum "go.mod" }}
           paths:
