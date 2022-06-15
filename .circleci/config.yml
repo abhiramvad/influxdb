@@ -419,7 +419,7 @@ jobs:
 
             gem install fpm
       - run:
-          name: Get Package Versions
+          name: Get InfluxDB Version
           command: |
             PREFIX=2.x .circleci/scripts/get-version
       - run:
@@ -456,19 +456,45 @@ jobs:
           to:   s3://dl.influxdata.com/influxdb/releases
 
   publish-changelog-s3:
+    parameters:
+      nightly:
+        type: boolean
     docker:
       - image: cimg/python:3.6
     steps:
       - attach_workspace:
           at: /tmp/workspace
-      - aws-s3/sync:
-          arguments: |
-            --acl public-read
-          aws-region:            RELEASE_AWS_REGION
-          aws-access-key-id:     RELEASE_AWS_ACCESS_KEY_ID
-          aws-secret-access-key: RELEASE_AWS_SECRET_ACCESS_KEY
-          from: /tmp/workspace/changelog_artifacts/
-          to:   s3://dl.influxdata.com/platform/nightlies/master
+      - run:
+          name: Install Package Dependencies
+          command: |
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install --allow awscli
+      - when:
+          condition: << parameters.nightly >>
+          steps:
+            - run:
+                name: Upload CHANGELOG.md to AWS S3
+                command: |
+                  aws-s3 sync /tmp/workspace/changelog_artifacts \
+                    s3://dl.influxdata.com/platform/nightlies/${CIRCLE_BRANCH}
+      - unless:
+          condition: << parameters.nightly >>
+          steps:
+            - run:
+                name: Get InfluxDB Version
+                command: |
+                  PREFIX=2.x .circleci/scripts/get-version
+            - run:
+                name: Upload CHANGELOG.md to AWS S3
+                command: |
+                  pushd /tmp/workspace/changelog_artifacts
+                    #
+                    mv CHANGELOG.md "CHANGELOG.${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}.md"
+                  popd
+
+                  aws-s3 sync /tmp/workspace/changelog_artifacts \
+                    s3://dl.influxdata.com/influxdb/releases/
 
   test-linux-packages:
     executor: terraform/default
@@ -711,41 +737,18 @@ jobs:
 
   changelog:
     docker:
-      - image: quay.io/influxdb/changelogger:903e73f266155f9bcd78356ea7fdb051b6db74b3
+      - image: quay.io/influxdb/changelogger:e03e93160333669a64a837194773a4b39a32d3fd
     steps:
       - checkout
       - run:
-          name: Generate changelog
+          name: Generate Changelog
           command: |
-            BRANCH="<< pipeline.git.branch >>"
-            VERSION="v$BRANCH"
-            DOCS_LINKS_VERSION="$VERSION"
-
-            # Runs triggered by pushed tags do not have the pipeline.git.branch parameter available.
-            if [ -n "<< pipeline.git.tag >>" ]; then
-              VERSION="<< pipeline.git.tag >>"
-              DOCS_LINKS_VERSION="$(echo "$VERSION" | sed 's/\.[^.]*$//')"
-              BRANCH="$(echo "$DOCS_LINKS_VERSION" | sed 's/v//' )"
+            if [[ ${RELEASE:-} ]]
+            then
+              export DESCRIPTION="In addition to the list of changes below, please also see the [official release notes](https://docs.influxdata.com/influxdb/${VERSION_MAJOR}.${VERSION_MINOR}/reference/release-notes/influxdb/) for other important information about this release.\n"
             fi
+            PRODUCT='OSS' changelogger
 
-            mkdir changelog_artifacts
-
-            echo -e "CHANGELOG for InfluxDB OSS $VERSION commit ${CIRCLE_SHA1}\n" > changelog_artifacts/CHANGELOG.md
-
-            if [[ ! "$BRANCH" == "master" ]] ;  then
-              echo -e "In addition to the list of changes below, please also see the [official release notes](https://docs.influxdata.com/influxdb/$DOCS_LINKS_VERSION/reference/release-notes/influxdb/) for other important information about this release.\n" >> changelog_artifacts/CHANGELOG.md
-            fi
-
-            if [[ "$BRANCH" == "master" ]] ;  then
-               LATEST_21X="$(git tag | grep '^v2\.1\.[0-9]*$' | sort -V | tail -1)"
-               # build 2.1.0 to 2.1.x changelog, plus unreleased from master
-               build-multibranch-changelog.sh HEAD "$LATEST_21X" v2.1.0 >> changelog_artifacts/CHANGELOG.md
-            elif [[ "$BRANCH" == "2.1" ]] ;  then
-               # build 2.1.0 to current 2.1 changelog
-               build-simple-changelog.sh HEAD v2.1.0 >> changelog_artifacts/CHANGELOG.md
-            fi
-
-            cat ./scripts/ci/CHANGELOG_frozen.md >> changelog_artifacts/CHANGELOG.md
       - store_artifacts:
           path: changelog_artifacts/
       - persist_to_workspace:
